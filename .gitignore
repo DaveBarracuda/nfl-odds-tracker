@@ -1,6 +1,6 @@
 .env
 data/
 logs/
-dashboard/index.html
+dashboard/
 __pycache__/
 *.pyc

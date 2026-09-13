@@ -67,6 +67,9 @@ LOW_CREDITS_WARNING = int(os.environ.get("LOW_CREDITS_WARNING", "100"))
 
 DB_PATH = Path(os.environ.get("DB_PATH", ROOT / "data" / "tracker.db"))
 DASHBOARD_PATH = ROOT / "dashboard" / "index.html"
+# Copias que descarga `python -m tracker sync` desde la rama state de GitHub.
+REMOTE_DASHBOARD_PATH = ROOT / "dashboard" / "remote.html"
+REMOTE_DB_PATH = ROOT / "data" / "remote.db"
 LOG_PATH = ROOT / "logs" / "tracker.log"
 
 # Umbrales por mercado. Spread y total en puntos; moneyline en puntos

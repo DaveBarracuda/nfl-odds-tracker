@@ -2,6 +2,7 @@
 import argparse
 import logging
 import os
+import subprocess
 import sys
 from logging.handlers import RotatingFileHandler
 
@@ -115,6 +116,27 @@ def cmd_dashboard(args) -> int:
     return 0
 
 
+def cmd_sync(args) -> int:
+    """Descarga de la rama state el dashboard y la base que genera GitHub Actions."""
+    def git(*cmd):
+        return subprocess.run(["git", *cmd], cwd=config.ROOT, check=True, capture_output=True)
+
+    try:
+        git("fetch", "--depth=1", "origin", "state")
+        for name, dest in (("dashboard.html", config.REMOTE_DASHBOARD_PATH), ("tracker.db", config.REMOTE_DB_PATH)):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(git("show", f"FETCH_HEAD:{name}").stdout)
+        updated = git("log", "-1", "--format=%cd", "--date=format-local:%Y-%m-%d %H:%M", "FETCH_HEAD").stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = exc.stderr.decode(errors="replace").strip() if isinstance(exc, subprocess.CalledProcessError) else exc
+        print(f"No se pudo descargar el estado de GitHub: {detail}")
+        return 1
+    print(f"Dashboard de GitHub Actions (actualizado {updated.decode().strip()}): {config.REMOTE_DASHBOARD_PATH}")
+    if args.open:
+        os.startfile(config.REMOTE_DASHBOARD_PATH)  # noqa: S606 - solo Windows
+    return 0
+
+
 def cmd_status(args) -> int:
     conn = db.connect(config.DB_PATH)
     now = db.utcnow()
@@ -193,6 +215,10 @@ def main(argv=None) -> int:
     p = sub.add_parser("dashboard", help="Regenera dashboard/index.html")
     p.add_argument("--open", action="store_true")
     p.set_defaults(func=cmd_dashboard)
+
+    p = sub.add_parser("sync", help="Descarga el dashboard y la base que genera GitHub Actions")
+    p.add_argument("--open", action="store_true")
+    p.set_defaults(func=cmd_sync)
 
     sub.add_parser("status", help="Estado, créditos y próxima ejecución").set_defaults(func=cmd_status)
 

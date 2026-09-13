@@ -11,7 +11,11 @@ El workflow [`.github/workflows/tracker.yml`](.github/workflows/tracker.yml) se 
 3. Toma el snapshot, busca splits, detecta movimientos y manda alertas a Telegram.
 4. Guarda la base y el dashboard en la rama `state` (un solo commit que se reemplaza, así el repo no crece).
 
-Para verlo: pestaña **Actions** → *Tracker NFL* (logs de cada ejecución). El dashboard está en la rama `state` como `dashboard.html`: descárgalo y ábrelo en el navegador.
+Los logs de cada ejecución están en la pestaña **Actions** → *Tracker NFL*.
+
+### Ver el dashboard
+
+Doble clic en `ver_dashboard.bat` (o `python -m tracker sync --open`). Descarga de la rama `state` el dashboard y la base más recientes a `dashboard/remote.html` y `data/remote.db`, y abre el dashboard en el navegador. Usa tu sesión de git/GitHub, así que el repo sigue privado.
 
 ### Ejecución manual
 
