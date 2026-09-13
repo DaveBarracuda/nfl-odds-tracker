@@ -1,0 +1,2 @@
+# Solo librería estándar de Python 3.10+. tzdata da las zonas horarias en Windows si faltan.
+tzdata

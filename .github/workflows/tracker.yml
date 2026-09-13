@@ -1,0 +1,75 @@
+name: Tracker NFL
+
+on:
+  schedule:
+    # Cada 30 minutos. El tracker decide si toca snapshot (cada hora, o cada
+    # 30 min cuando un partido arranca en 2 h o menos).
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Tomar snapshot aunque no toque (gasta 3 créditos)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "No enviar alertas a Telegram"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tracker
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Recuperar estado (rama state)
+        run: |
+          mkdir -p data
+          if git ls-remote --exit-code --heads origin state > /dev/null; then
+            git fetch --depth=1 origin state
+            git show FETCH_HEAD:tracker.db > data/tracker.db
+            echo "Estado recuperado: $(du -h data/tracker.db | cut -f1)"
+          else
+            echo "Sin estado previo: se crea una base nueva"
+          fi
+
+      - name: Ejecutar tracker
+        run: |
+          FLAGS=""
+          if [ "${{ inputs.force }}" = "true" ]; then FLAGS="$FLAGS --force"; fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then FLAGS="$FLAGS --dry-run"; fi
+          python -m tracker run $FLAGS
+
+      - name: Guardar estado (rama state)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          [ -f data/tracker.db ] || { echo "No hay base que guardar"; exit 0; }
+          STATE=$(mktemp -d)
+          cp data/tracker.db "$STATE/"
+          [ -f dashboard/index.html ] && cp dashboard/index.html "$STATE/dashboard.html"
+          cd "$STATE"
+          printf '# Estado del tracker\n\nLo escribe el workflow en cada ejecución (un solo commit, se reemplaza). Descarga `dashboard.html` y ábrelo en el navegador.\n' > README.md
+          git init -q -b state
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Estado $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" state
+          echo "Estado guardado"
