@@ -66,4 +66,16 @@ Para cada partido y mercado se calcula el consenso y se compara contra el snapsh
 | Gradual | ≥ 3 pasos seguidos en la misma dirección, ≥ 1 pt (1.5 total, 4 pp ML) acumulado en ≥ 3 h dentro de 72 h. | Sí |
 | Ruido | 1–2 casas se mueven, direcciones mixtas, solo juice, huecos sin snapshots o una casa fuera de consenso. | No, solo dashboard |
 
-Las alertas del mismo partido y mercado se agrupan en un mensaje. Si falla un snapshot o quedan menos de 100 créditos llega un aviso único. Los umbrales están en `tracker/config.py` (`THRESHOLDS`). Se conservan 8 días de líneas y 30 de alertas.
+Las alertas del mismo partido y mercado se agrupan en un mensaje. Si falla un snapshot o quedan menos de 100 créditos llega un aviso único. Los umbrales están en `tracker/config.py` (`THRESHOLDS`).
+
+## Retención
+
+Se conserva toda la temporada sin que la base pase de ~45 MB (GitHub rechaza archivos de más de 100 MB):
+
+| Antigüedad | Qué se guarda |
+|---|---|
+| Últimos 8 días (`KEEP_DAYS`) | Todas las líneas y splits. La detección usa 72 h y el dashboard 7 días. |
+| Hasta 200 días (`ARCHIVE_DAYS`) | Por partido: apertura, cierre (último snapshot antes del kickoff) y el primer snapshot de cada día, con sus splits. Alertas de información, vapor, RLM y graduales, y los eventos. |
+| Más de 200 días | Se borra todo. |
+
+Las alertas de ruido se borran a los 8 días: solo sirven para el dashboard.
