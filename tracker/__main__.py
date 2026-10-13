@@ -82,9 +82,10 @@ def cmd_run(args) -> int:
     result = notify.process(conn, snapshot_id, signals, dry_run=args.dry_run)
     log.info("Detección: %s", result)
     notify.check_credits(conn, usage["remaining"], args.dry_run)
-    pruned = db.prune(conn, now, config.KEEP_DAYS)
+    pruned = db.prune(conn, now, config.KEEP_DAYS, config.ARCHIVE_DAYS)
     if pruned:
-        log.info("Se borraron %s snapshots de más de %s días", pruned, config.KEEP_DAYS)
+        log.info("Compactación: %s líneas de más de %s días (se conservan apertura, cierre y diario)",
+                 pruned, config.KEEP_DAYS)
     path = dashboard.render(conn, now)
     log.info("Dashboard: %s", path)
     return 0

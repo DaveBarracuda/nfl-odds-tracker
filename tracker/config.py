@@ -61,8 +61,11 @@ PREGAME_WINDOW_MIN = int(os.environ.get("PREGAME_WINDOW_MIN", "120"))
 # y no contra el reloj para tolerar los retrasos del cron de GitHub Actions.
 HOURLY_GAP_MIN = int(os.environ.get("HOURLY_GAP_MIN", "55"))
 PREGAME_GAP_MIN = int(os.environ.get("PREGAME_GAP_MIN", "25"))
-# Días de líneas y splits que se conservan (la detección usa 72 h y el dashboard 7 días).
+# Días de líneas y splits completos (la detección usa 72 h y el dashboard 7 días).
 KEEP_DAYS = int(os.environ.get("KEEP_DAYS", "8"))
+# Días de archivo (toda la temporada): pasado KEEP_DAYS se conservan apertura, cierre y un
+# snapshot diario por partido; alertas y eventos se conservan completos.
+ARCHIVE_DAYS = int(os.environ.get("ARCHIVE_DAYS", "200"))
 LOW_CREDITS_WARNING = int(os.environ.get("LOW_CREDITS_WARNING", "100"))
 
 DB_PATH = Path(os.environ.get("DB_PATH", ROOT / "data" / "tracker.db"))

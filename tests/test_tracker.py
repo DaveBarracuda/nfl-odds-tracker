@@ -116,14 +116,48 @@ class DetectTests(TrackerCase):
         self.assertEqual(detect.consensus(lines, 1.5, discrete=True)[0], -3.5)
         self.assertEqual(detect.consensus(lines, 1.5)[0], -3.25)
 
-    def test_prune_removes_old_snapshots(self):
-        old = self.snap(0, every(-3))
-        recent = self.snap(60 * 24 * 9, every(-3))
-        removed = db.prune(self.conn, T0 + timedelta(days=9), keep_days=8)
-        self.assertEqual(removed, 1)
-        remaining = {r["snapshot_id"] for r in self.conn.execute("SELECT DISTINCT snapshot_id FROM lines")}
-        self.assertEqual(remaining, {recent})
-        self.assertNotIn(old, remaining)
+    def kept_snapshots(self):
+        return {r["snapshot_id"] for r in self.conn.execute("SELECT DISTINCT snapshot_id FROM lines")}
+
+    def test_prune_compacts_old_lines_to_open_daily_and_close(self):
+        # Kickoff de e1 = T0 + 4 días (T0 es a las 12:00 UTC). Snapshots cada 6 h durante 6 días.
+        hours = range(0, 24 * 6, 6)
+        sids = {h: self.snap(60 * h, every(-3)) for h in hours}
+        recent = self.snap(60 * 24 * 20, every(-3))
+        removed = db.prune(self.conn, T0 + timedelta(days=20), keep_days=8, archive_days=200)
+        first_of_day = {}
+        for h in hours:
+            first_of_day.setdefault((T0 + timedelta(hours=h)).date(), sids[h])
+        close = sids[24 * 4]                                     # último snapshot <= kickoff
+        expected = set(first_of_day.values()) | {close, recent}
+        self.assertEqual(self.kept_snapshots(), expected)
+        self.assertEqual(removed, (len(sids) - len(expected) + 1) * len(BOOKS) * 2)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0], len(sids) + 1)
+
+    def test_prune_archives_real_alerts_but_not_old_noise(self):
+        self.snap(0, every(-3))
+        for kind in ("rlm", "noise"):
+            self.conn.execute("INSERT INTO alerts (snapshot_id, created_at, event_id, market, kind, strength)"
+                              " VALUES (1, ?, 'e1', 'spreads', ?, 60)", (db.iso(T0), kind))
+        db.prune(self.conn, T0 + timedelta(days=20), keep_days=8, archive_days=200)
+        kinds = [r["kind"] for r in self.conn.execute("SELECT kind FROM alerts")]
+        self.assertEqual(kinds, ["rlm"])
+
+    def test_prune_keeps_recent_lines_complete(self):
+        sids = {self.snap(60 * h, every(-3)) for h in range(0, 24, 6)}
+        removed = db.prune(self.conn, T0 + timedelta(days=1), keep_days=8, archive_days=200)
+        self.assertEqual(removed, 0)
+        self.assertEqual(self.kept_snapshots(), sids)
+
+    def test_prune_drops_everything_past_the_archive(self):
+        self.snap(0, every(-3))
+        self.conn.execute("INSERT INTO alerts (snapshot_id, created_at, event_id, market, kind, strength)"
+                          " VALUES (1, ?, 'e1', 'spreads', 'rlm', 60)", (db.iso(T0),))
+        recent = self.snap(60 * 24 * 205, every(-3))
+        db.prune(self.conn, T0 + timedelta(days=205), keep_days=8, archive_days=200)
+        self.assertEqual(self.kept_snapshots(), {recent})
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], 0)
 
     def test_outlier_book_is_flagged_and_excluded(self):
         signals = self.signals(self.snap(0, every(-3, draftkings=3)))

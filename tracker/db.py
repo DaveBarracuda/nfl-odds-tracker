@@ -112,20 +112,68 @@ def upsert_events(conn: sqlite3.Connection, events: list[dict]) -> None:
     )
 
 
-def prune(conn: sqlite3.Connection, now: datetime, keep_days: int) -> int:
-    """Borra snapshots, líneas y splits viejos para que el estado no crezca sin límite."""
+# Pares (snapshot, evento) que se conservan al compactar: apertura, cierre (último
+# snapshot antes del kickoff) y el primer snapshot de cada día UTC de cada partido.
+_KEEP_PAIRS_SQL = """
+CREATE TEMP TABLE keep_pairs AS
+WITH old AS (
+    SELECT DISTINCT l.snapshot_id, l.event_id, s.taken_at
+    FROM lines l JOIN snapshots s ON s.id = l.snapshot_id
+    WHERE s.taken_at < :cutoff
+),
+ranked AS (
+    SELECT o.snapshot_id, o.event_id,
+           (e.commence_time IS NULL OR o.taken_at <= e.commence_time) AS pregame,
+           ROW_NUMBER() OVER (PARTITION BY o.event_id ORDER BY o.taken_at) AS open_rank,
+           ROW_NUMBER() OVER (PARTITION BY o.event_id, substr(o.taken_at, 1, 10) ORDER BY o.taken_at) AS day_rank,
+           ROW_NUMBER() OVER (PARTITION BY o.event_id,
+                              (e.commence_time IS NULL OR o.taken_at <= e.commence_time)
+                              ORDER BY o.taken_at DESC) AS close_rank
+    FROM old o LEFT JOIN events e ON e.id = o.event_id
+)
+SELECT snapshot_id, event_id FROM ranked
+WHERE open_rank = 1 OR day_rank = 1 OR (pregame AND close_rank = 1)
+"""
+
+
+def prune(conn: sqlite3.Connection, now: datetime, keep_days: int, archive_days: int) -> int:
+    """Retención por niveles para conservar la temporada sin que la base crezca sin límite.
+
+    * Últimos ``keep_days``: todo completo (la detección usa 72 h y el dashboard 7 días).
+    * Hasta ``archive_days``: por partido solo apertura, cierre y un snapshot por día
+      (líneas y splits). Alertas (salvo ruido), eventos y filas de snapshots se conservan.
+    * Más viejo que ``archive_days``: se borra todo.
+
+    Devuelve cuántas filas de líneas se eliminaron.
+    """
     cutoff = iso(now - timedelta(days=keep_days))
-    row = conn.execute("SELECT MAX(id) AS id, COUNT(*) AS n FROM snapshots WHERE taken_at < ?", (cutoff,)).fetchone()
-    if not row["n"]:
-        return 0
-    conn.execute("DELETE FROM lines WHERE snapshot_id <= ?", (row["id"],))
-    conn.execute("DELETE FROM splits WHERE snapshot_id <= ?", (row["id"],))
-    conn.execute("DELETE FROM snapshots WHERE id <= ?", (row["id"],))
-    conn.execute("DELETE FROM alerts WHERE created_at < ?", (iso(now - timedelta(days=30)),))
-    conn.execute("DELETE FROM events WHERE commence_time < ?", (cutoff,))
+    archive_cutoff = iso(now - timedelta(days=archive_days))
+    before = conn.total_changes
+    lines_before = conn.execute("SELECT COUNT(*) FROM lines").fetchone()[0]
+    expired = conn.execute("SELECT MAX(id) AS id FROM snapshots WHERE taken_at < ?", (archive_cutoff,)).fetchone()
+    if expired["id"] is not None:
+        conn.execute("DELETE FROM lines WHERE snapshot_id <= ?", (expired["id"],))
+        conn.execute("DELETE FROM splits WHERE snapshot_id <= ?", (expired["id"],))
+        conn.execute("DELETE FROM snapshots WHERE id <= ?", (expired["id"],))
+    conn.execute("DROP TABLE IF EXISTS temp.keep_pairs")
+    conn.execute(_KEEP_PAIRS_SQL, {"cutoff": cutoff})
+    for table in ("lines", "splits"):
+        conn.execute(
+            f"""DELETE FROM {table}
+                WHERE snapshot_id IN (SELECT id FROM snapshots WHERE taken_at < ?)
+                  AND (snapshot_id, event_id) NOT IN (SELECT snapshot_id, event_id FROM temp.keep_pairs)""",
+            (cutoff,),
+        )
+    conn.execute("DROP TABLE temp.keep_pairs")
+    removed_lines = lines_before - conn.execute("SELECT COUNT(*) FROM lines").fetchone()[0]
+    conn.execute("DELETE FROM alerts WHERE created_at < ?", (archive_cutoff,))
+    # El ruido solo se muestra en el dashboard reciente: no se archiva (~75% del peso de alertas).
+    conn.execute("DELETE FROM alerts WHERE kind = 'noise' AND created_at < ?", (cutoff,))
+    conn.execute("DELETE FROM events WHERE commence_time < ?", (archive_cutoff,))
     conn.commit()
-    conn.execute("VACUUM")
-    return row["n"]
+    if conn.total_changes > before:
+        conn.execute("VACUUM")
+    return removed_lines
 
 
 def last_snapshot(conn: sqlite3.Connection) -> sqlite3.Row | None:
