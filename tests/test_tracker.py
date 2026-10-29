@@ -107,6 +107,12 @@ class DetectTests(TrackerCase):
         self.assertEqual([s.kind for s in signals], ["noise"])
         self.assertTrue(signals[0].silenced)
 
+    def test_noise_text_agrees_in_number(self):
+        self.snap(0, every(-3))
+        signals = self.signals(self.snap(600, every(-3, bovada=-3.5)))
+        self.assertIn("1 casa movió", signals[0].summary)
+        self.assertNotIn("1 casas", signals[0].summary)
+
     def test_juice_only_move_is_noise(self):
         self.snap(0, every((-3, -110)))
         signals = self.signals(self.snap(60, every((-3, -110), draftkings=(-3, -125), fanduel=(-3, -122))))

@@ -122,6 +122,11 @@ def fmt_delta(market: str, delta: float) -> str:
     return f"{delta:+.1f} pp" if market == "h2h" else f"{delta:+g} pts"
 
 
+def books_phrase(count: int) -> str:
+    """'1 casa' / '3 casas', para que los textos concuerden en número."""
+    return f"{count} casa" if count == 1 else f"{count} casas"
+
+
 def fmt_magnitude(market: str, value: float) -> str:
     """Tamaño del recorrido, sin signo: la dirección se dice aparte."""
     return f"{abs(value):.1f} pp" if market == "h2h" else f"{abs(value):g} pts"

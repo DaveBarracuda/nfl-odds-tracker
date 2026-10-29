@@ -10,8 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from . import config, openings
-from .market import (EPS, OPPOSITE, UNITS, Signal, book_name, clamp, fmt_delta, fmt_magnitude,
-                     fmt_value, juice_cents, key_number_hit, move_side, side_label)
+from .market import (EPS, OPPOSITE, UNITS, Signal, book_name, books_phrase, clamp, fmt_delta,
+                     fmt_magnitude, fmt_value, juice_cents, key_number_hit, move_side,
+                     side_label)
 from .openings import MIN_BOOK_SHARE, Drift, Opening
 
 EXTENDS_BONUS = 5
@@ -330,11 +331,13 @@ def noise(ctx: MarketCtx) -> Signal | None:
         )
     text, reason = None, None
     if ctx.up and ctx.down:
-        text = f"Movimientos en direcciones opuestas: {len(ctx.up)} casas suben y {len(ctx.down)} bajan."
+        text = (f"Movimientos en direcciones opuestas: {books_phrase(len(ctx.up))} "
+                f"{'sube' if len(ctx.up) == 1 else 'suben'} y {len(ctx.down)} "
+                f"{'baja' if len(ctx.down) == 1 else 'bajan'}.")
         reason = "mixto"
     elif ctx.dom and not ctx.fast:
-        text = (f"{len(ctx.dom)} casas movieron la línea tras {round(ctx.gap)} min sin snapshots; "
-                "no se puede medir la velocidad.")
+        text = (f"{books_phrase(len(ctx.dom))} {'movió' if len(ctx.dom) == 1 else 'movieron'} "
+                f"la línea tras {round(ctx.gap)} min sin snapshots; no se puede medir la velocidad.")
         reason = "hueco"
     elif ctx.dom:
         names = ", ".join(map(book_name, ctx.dom))
@@ -343,7 +346,7 @@ def noise(ctx: MarketCtx) -> Signal | None:
             text += " Hay una casa sharp: posible inicio de vapor."
         reason = "sin_confirmacion"
     elif len(juice) >= 2:
-        text, reason = f"Cambio de juice en {len(juice)} casas sin mover la línea.", "juice"
+        text, reason = f"Cambio de juice en {books_phrase(len(juice))} sin mover la línea.", "juice"
     if not text:
         return None
     return Signal(
