@@ -78,9 +78,12 @@ LOG_PATH = ROOT / "logs" / "tracker.log"
 # Umbrales por mercado. Spread y total en puntos; moneyline en puntos
 # porcentuales de probabilidad implícita sin vig del local.
 THRESHOLDS = {
-    "spreads": {"move": 0.5, "info": 1.5, "gradual_total": 1.0, "outlier": 1.5, "step": 0.25},
-    "totals": {"move": 0.5, "info": 2.0, "gradual_total": 1.5, "outlier": 2.0, "step": 0.25},
-    "h2h": {"move": 2.0, "info": 6.0, "gradual_total": 4.0, "outlier": 5.0, "step": 1.0},
+    "spreads": {"move": 0.5, "info": 1.5, "gradual_total": 1.0, "outlier": 1.5, "step": 0.25,
+                "reversion": 1.0},
+    "totals": {"move": 0.5, "info": 2.0, "gradual_total": 1.5, "outlier": 2.0, "step": 0.25,
+               "reversion": 1.5},
+    "h2h": {"move": 2.0, "info": 6.0, "gradual_total": 4.0, "outlier": 5.0, "step": 1.0,
+            "reversion": 4.0},
     # Vapor: al menos N casas se mueven en la misma dirección entre dos snapshots cercanos.
     "steam_min_books": 3,
     "steam_max_opposite": 1,
@@ -93,6 +96,10 @@ THRESHOLDS = {
     "gradual_window_hours": 72,
     "gradual_min_steps": 3,
     "gradual_min_hours": 3,
+    # Apertura: casas mínimas para fijar la apertura del consenso. "reversion" (por
+    # mercado) es el recorrido mínimo de ida y vuelta para avisar que la línea
+    # regresó a su punto de partida.
+    "open_min_books": 3,
     # Ruido: cambios de juice sin cambio de línea a partir de estos centavos.
     "noise_juice_cents": 10,
     "key_numbers": [3, 7, 10, 6, 4, 14],

@@ -6,7 +6,8 @@ import subprocess
 import sys
 from logging.handlers import RotatingFileHandler
 
-from . import config, dashboard, db, detect, notify, odds_api, scheduler, splits, telegram
+from . import (config, dashboard, db, detect, notify, odds_api, openings, scheduler,
+               splits, telegram)
 
 log = logging.getLogger("tracker")
 
@@ -75,6 +76,7 @@ def cmd_run(args) -> int:
         notify.system(conn, f"odds-error:{str(exc)[:80]}", f"⚠️ <b>Odds Tracker</b>: falló el snapshot: {exc}", args.dry_run)
         dashboard.render(conn, now)
         return 1
+    openings.ensure(conn, snapshot_id)
     notify.clear_system(conn, "odds-error")
     notify.clear_system(conn, "events-error")
 

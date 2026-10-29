@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from tracker import dashboard, db, detect, notify, odds_api, scheduler, splits
+from tracker import dashboard, db, detect, notify, odds_api, openings, scheduler, splits
 
 BOOKS = ["pinnacle", "lowvig", "betonlineag", "draftkings", "fanduel",
          "betmgm", "espnbet", "betrivers", "hardrockbet", "bovada"]
@@ -23,7 +23,7 @@ class TrackerCase(unittest.TestCase):
             (HOME, AWAY, db.iso(T0 + timedelta(days=4))),
         )
 
-    def snap(self, minutes, spreads=None, totals=None):
+    def snap(self, minutes, spreads=None, totals=None, register=True):
         taken = T0 + timedelta(minutes=minutes)
         sid = self.conn.execute(
             "INSERT INTO snapshots (taken_at, reason) VALUES (?, 'test')", (db.iso(taken),)
@@ -37,6 +37,8 @@ class TrackerCase(unittest.TestCase):
             rows += [(sid, "e1", book, "totals", "over", point, -110, None),
                      (sid, "e1", book, "totals", "under", point, -110, None)]
         self.conn.executemany("INSERT INTO lines VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        if register:
+            openings.ensure(self.conn, sid)
         return sid
 
     def signals(self, sid):
@@ -258,6 +260,186 @@ class OutputTests(TrackerCase):
         self.assertEqual(game["markets"]["spreads"]["open"], -9.5)
         self.assertEqual(game["markets"]["spreads"]["now"], -7)
         self.assertEqual(data["alerts"][0]["to_label"], "Colts -7")
+
+    def test_reversion_marks_previous_alerts_as_reverted(self):
+        self.snap(0, every(-3))
+        sid2 = self.snap(60, every(-4))
+        notify.process(self.conn, sid2, self.signals(sid2), dry_run=True)
+        sid3 = self.snap(120, every(-3))
+        notify.process(self.conn, sid3, self.signals(sid3), dry_run=True)
+        rows = dict(self.conn.execute("SELECT kind, reverted FROM alerts WHERE snapshot_id = ?", (sid2,)))
+        self.assertEqual(rows["steam"], 1)
+
+    def test_reversion_does_not_mark_its_own_snapshot(self):
+        self.snap(0, every(-3))
+        self.snap(60, every(-4))
+        sid = self.snap(120, every(-3))
+        notify.process(self.conn, sid, self.signals(sid), dry_run=True)
+        same = dict(self.conn.execute("SELECT kind, reverted FROM alerts WHERE snapshot_id = ?", (sid,)))
+        self.assertTrue(all(v == 0 for v in same.values()), same)
+
+    def test_message_shows_the_opening_line(self):
+        self.snap(0, every(-9.5))
+        sid = self.snap(60, every(-7))
+        notify.process(self.conn, sid, self.signals(sid), dry_run=True)
+        message = self.conn.execute("SELECT message FROM alerts WHERE kind = 'info'").fetchone()["message"]
+        self.assertIn("Apertura", notify.plain(message))
+        self.assertIn("Colts -9.5", notify.plain(message))
+
+    def test_dashboard_exposes_opening_and_drift(self):
+        self.snap(0, every(-3))
+        self.snap(60, every(-4.5))
+        self.snap(120, every(-3))
+        data = dashboard.build_data(self.conn, T0 + timedelta(minutes=121))
+        spreads = data["games"][0]["markets"]["spreads"]
+        self.assertEqual(spreads["open"], -3)
+        self.assertEqual(spreads["net"], 0)
+        self.assertEqual(spreads["swing"], 1.5)
+        self.assertEqual(spreads["state"], "retorno")
+
+
+class OpeningTests(TrackerCase):
+    """La apertura es la primera linea observada y es la base de toda comparacion."""
+
+    def test_opening_is_first_observed_line(self):
+        self.snap(0, every(-3))
+        self.snap(60, every(-4.5))
+        opens = openings.load(self.conn)[("e1", "spreads")]
+        self.assertEqual(opens[openings.CONSENSUS].value, -3)
+        self.assertEqual(opens["pinnacle"].value, -3)
+
+    def test_opening_tracks_extremes_across_snapshots(self):
+        self.snap(0, every(-3))
+        self.snap(60, every(-4.5))
+        self.snap(120, every(-2.5))
+        cons = openings.load(self.conn)[("e1", "spreads")][openings.CONSENSUS]
+        self.assertEqual((cons.low, cons.high), (-4.5, -2.5))
+        self.assertEqual(cons.value, -3)
+
+    def test_consensus_opening_waits_for_enough_books(self):
+        self.snap(0, {"pinnacle": -3, "fanduel": -3})
+        openings.ensure(self.conn, 1)
+        self.assertNotIn(openings.CONSENSUS, openings.load(self.conn)[("e1", "spreads")])
+        self.snap(60, every(-4))
+        self.assertEqual(openings.load(self.conn)[("e1", "spreads")][openings.CONSENSUS].value, -4)
+
+    def test_backfill_uses_oldest_snapshot_not_newest(self):
+        self.snap(0, every(-3))
+        self.snap(60, every(-4.5))
+        self.conn.execute("DELETE FROM openings")
+        openings.backfill(self.conn)
+        self.assertEqual(openings.load(self.conn)[("e1", "spreads")][openings.CONSENSUS].value, -3)
+
+
+class OpeningRobustnessTests(TrackerCase):
+    """Huecos del pipeline y alimentaciones incompletas de la API."""
+
+    def test_skipped_snapshot_is_recovered_on_the_next_run(self):
+        self.snap(0, every(-3))
+        self.snap(60, every(-5), register=False)
+        sid = self.snap(120, every(-3))
+        cons = openings.load(self.conn)[("e1", "spreads")][openings.CONSENSUS]
+        self.assertEqual(cons.low, -5)
+        self.assertIn("reversion", self.kinds(sid))
+
+    def test_thin_feed_does_not_move_the_extremes(self):
+        self.snap(0, every(-3))
+        self.snap(60, {"pinnacle": -4.5, "fanduel": -4.5, "betmgm": -4.5})
+        sid = self.snap(120, every(-3))
+        cons = openings.load(self.conn)[("e1", "spreads")][openings.CONSENSUS]
+        self.assertEqual((cons.low, cons.high), (-3, -3))
+        self.assertNotIn("reversion", self.kinds(sid))
+
+    def test_analyze_does_not_write_openings(self):
+        sid = self.snap(0, every(-3), register=False)
+        self.assertEqual(detect.analyze(self.conn, sid), [])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM openings").fetchone()[0], 0)
+
+    def test_second_round_trip_alerts_again(self):
+        """Una ida y vuelta posterior no debe quedar suprimida por la anterior."""
+        reversions = 0
+        for minutes, line in ((0, -3), (60, -4), (120, -3), (180, -4), (240, -3)):
+            sid = self.snap(minutes, every(line))
+            found = [s for s in self.signals(sid) if s.kind == "reversion"]
+            reversions += notify.process(self.conn, sid, found, dry_run=True)["new"]
+        self.assertEqual(reversions, 2)
+
+
+class DriftTests(unittest.TestCase):
+    """Estado de la linea actual contra su apertura."""
+
+    @staticmethod
+    def opening(value=-3.0, high=None, low=None):
+        return openings.Opening(value=value, seen_at=T0, snapshot_id=1,
+                                high=value if high is None else high,
+                                low=value if low is None else low, books=10)
+
+    def test_sustained_move_away_from_open(self):
+        drift = openings.compare("spreads", self.opening(low=-4.5), current=-4.5, previous=-4.0)
+        self.assertEqual(drift.state, "sostenido")
+        self.assertEqual(drift.net, -1.5)
+        self.assertEqual(drift.move, "extiende")
+        self.assertFalse(drift.at_open)
+
+    def test_return_to_opening_point(self):
+        drift = openings.compare("spreads", self.opening(low=-4.5), current=-3.0, previous=-4.0)
+        self.assertEqual(drift.state, "retorno")
+        self.assertEqual(drift.swing, 1.5)
+        self.assertEqual(drift.move, "vuelve")
+        self.assertTrue(drift.at_open)
+
+    def test_pullback_that_does_not_reach_opening(self):
+        drift = openings.compare("spreads", self.opening(low=-4.5), current=-4.0, previous=-4.5)
+        self.assertEqual(drift.move, "corrige")
+        self.assertEqual(drift.state, "sostenido")
+
+    def test_crossing_the_opening_line(self):
+        drift = openings.compare("spreads", self.opening(high=-2.5, low=-4.5), current=-2.5, previous=-3.5)
+        self.assertEqual(drift.move, "cruza")
+
+    def test_describe_reads_naturally_when_net_is_zero(self):
+        drift = openings.compare("spreads", self.opening(low=-4.5), current=-3.0, previous=-4.0)
+        text = openings.describe("spreads", drift, -3.0, "Indianapolis Colts")
+        self.assertIn("sin cambio neto", text)
+        self.assertNotIn("+0", text)
+
+    def test_line_that_never_moved(self):
+        drift = openings.compare("spreads", self.opening(), current=-3.0, previous=-3.0)
+        self.assertEqual(drift.state, "estable")
+        self.assertIsNone(drift.move)
+
+
+class ReversionTests(TrackerCase):
+    def test_round_trip_emits_reversion_and_is_not_silenced(self):
+        self.snap(0, every(-3))
+        self.snap(60, every(-4))
+        signals = self.signals(self.snap(120, every(-3)))
+        reversion = [s for s in signals if s.kind == "reversion"]
+        self.assertEqual(len(reversion), 1)
+        self.assertFalse(reversion[0].silenced)
+        self.assertEqual(reversion[0].details["swing"], 1.0)
+        self.assertIn("volvió a su apertura", reversion[0].summary)
+
+    def test_small_round_trip_is_not_a_reversion(self):
+        self.snap(0, every(-3))
+        self.snap(60, every(-3.5))
+        self.assertNotIn("reversion", self.kinds(self.snap(120, every(-3))))
+
+    def test_signals_carry_the_comparison_against_opening(self):
+        self.snap(0, every(-9.5))
+        info = [s for s in self.signals(self.snap(60, every(-7))) if s.kind == "info"][0]
+        self.assertEqual(info.details["open_value"], -9.5)
+        self.assertEqual(info.details["open_net"], 2.5)
+        self.assertEqual(info.details["open_state"], "sostenido")
+        self.assertEqual(info.details["open_move"], "extiende")
+        self.assertIn("apertura", info.details["open_text"])
+
+    def test_move_back_toward_open_is_reported_as_correction(self):
+        self.snap(0, every(-3))
+        self.snap(60, every(-4.5))
+        steam = [s for s in self.signals(self.snap(120, every(-3.5))) if s.kind == "steam"][0]
+        self.assertEqual(steam.details["open_move"], "corrige")
+        self.assertEqual(steam.details["open_net"], -0.5)
 
 
 if __name__ == "__main__":

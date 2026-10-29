@@ -9,13 +9,13 @@
 :root{
   --bg:#f7f7f5;--card:#fff;--soft:#f1f0ec;--text:#1a1a19;--muted:#5f5e5a;--faint:#8a8880;--border:rgba(0,0,0,.09);
   --grid:#ebeae4;--line-book:rgba(120,118,110,.35);--accent:#2a78d6;--accent-bg:#e6f1fb;--home:#2a78d6;--away:#eb6834;
-  --rlm:#534ab7;--rlm-bg:#eeedfe;--steam:#a32d2d;--steam-bg:#fcebeb;--grad:#185fa5;--grad-bg:#e6f1fb;
+  --rlm:#534ab7;--rlm-bg:#eeedfe;--steam:#a32d2d;--steam-bg:#fcebeb;--grad:#185fa5;--grad-bg:#e6f1fb;--rev:#0f6e56;--rev-bg:#e1f5ee;
   --info:#854f0b;--info-bg:#faeeda;--noise:#5f5e5a;--noise-bg:#f1efe8;--ok:#3b6d11;--ok-bg:#eaf3de;--warn:#854f0b;--warn-bg:#faeeda;
 }
 @media (prefers-color-scheme:dark){:root{
   --bg:#141413;--card:#1c1c1a;--soft:#262624;--text:#f0efec;--muted:#bdbbb2;--faint:#8a8880;--border:rgba(255,255,255,.09);
   --grid:#2c2c2a;--line-book:rgba(180,178,170,.3);--accent:#5a9ee8;--accent-bg:#0c2a4a;--home:#3987e5;--away:#d95926;
-  --rlm:#afa9ec;--rlm-bg:#26215c;--steam:#f09595;--steam-bg:#501313;--grad:#85b7eb;--grad-bg:#042c53;
+  --rlm:#afa9ec;--rlm-bg:#26215c;--steam:#f09595;--steam-bg:#501313;--grad:#85b7eb;--grad-bg:#042c53;--rev:#5dcaa5;--rev-bg:#04342c;
   --info:#fac775;--info-bg:#412402;--noise:#b4b2a9;--noise-bg:#2c2c2a;--ok:#97c459;--ok-bg:#173404;--warn:#fac775;--warn-bg:#412402;
 }}
 *{box-sizing:border-box}
@@ -51,7 +51,7 @@ h2{font-size:15px;font-weight:600;margin:0}
 .bar{display:block;height:4px;border-radius:2px;background:var(--soft);margin:3px 0;position:relative;overflow:hidden}
 .bar::after{content:"";position:absolute;left:0;top:0;bottom:0;width:var(--w);background:currentColor}
 .badge{display:inline-block;font-size:12px;padding:1px 8px;border-radius:6px;white-space:nowrap}
-.b-rlm{background:var(--rlm-bg);color:var(--rlm)}.b-steam{background:var(--steam-bg);color:var(--steam)}.b-gradual{background:var(--grad-bg);color:var(--grad)}
+.b-rlm{background:var(--rlm-bg);color:var(--rlm)}.b-reversion{background:var(--rev-bg);color:var(--rev)}.b-steam{background:var(--steam-bg);color:var(--steam)}.b-gradual{background:var(--grad-bg);color:var(--grad)}
 .b-info{background:var(--info-bg);color:var(--info)}.b-noise{background:var(--noise-bg);color:var(--noise)}
 .badges{display:flex;gap:6px;flex-wrap:wrap}
 .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:4px 0 12px}
@@ -77,6 +77,8 @@ tr.hl td{background:var(--warn-bg)}
 #games tbody tr:hover td,#games tbody tr.sel td{background:var(--soft)}
 .tag{font-size:11px;padding:0 6px;border-radius:5px;background:var(--soft);color:var(--muted);margin-left:4px}
 .tag.warn{background:var(--warn-bg);color:var(--warn)}
+.tag.rev{background:var(--rev-bg);color:var(--rev)}
+.arow.rv .t1,.arow.rv .mv{opacity:.65}
 .alert-box{background:var(--soft);border-radius:10px;padding:10px 12px}
 .alert-box p{margin:6px 0 0}
 .tg{white-space:pre-wrap;font:12px/1.5 ui-monospace,Consolas,monospace;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin:8px 0 0}
@@ -111,8 +113,9 @@ footer{margin-top:16px;font-size:12px;color:var(--faint)}
 const D = /*__DATA__*/null;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const KINDS = {rlm:'RLM', steam:'Vapor', gradual:'Gradual', info:'Información', noise:'Ruido'};
-const KCOLOR = {rlm:'--rlm', steam:'--steam', gradual:'--grad', info:'--info', noise:'--noise'};
+const KINDS = {rlm:'RLM', steam:'Vapor', gradual:'Gradual', info:'Información', reversion:'Retorno', noise:'Ruido'};
+const KCOLOR = {rlm:'--rlm', steam:'--steam', gradual:'--grad', info:'--info', reversion:'--rev', noise:'--noise'};
+const STATES = {sostenido:'movimiento sostenido', leve:'cambio leve', retorno:'volvió a la apertura', estable:'sin cambio'};
 const MK = {spreads:'Spread', totals:'Total', h2h:'Moneyline'};
 const games = Object.fromEntries(D.games.map(g => [g.id, g]));
 const books = Object.fromEntries(D.books.map(b => [b.key, b]));
@@ -145,6 +148,7 @@ function fmtDiff(m, d) {
   return `${d > 0 ? '+' : ''}${m === 'h2h' ? (+d).toFixed(1) + ' pp' : num(d) + (m === 'h2h' ? '' : ' pts')}`;
 }
 const fmtOdds = p => p == null ? '—' : (p > 0 ? '+' : '') + p;
+const fmtMag = (m, v) => v == null ? '—' : (m === 'h2h' ? Math.abs(v).toFixed(1) + ' pp' : num(Math.abs(v)) + ' pts');
 const badge = k => `<span class="badge b-${k}">${KINDS[k]}</span>`;
 
 const params = new URLSearchParams(location.hash.slice(1));
@@ -204,8 +208,8 @@ function renderList() {
   }
   $('alertList').innerHTML = list.map(a => {
     const g = games[a.event_id] || a.game;
-    return `<div class="arow ${a.id === state.alert ? 'sel' : ''}" data-id="${a.id}">
-      <div>${badge(a.kind)}</div>
+    return `<div class="arow ${a.id === state.alert ? 'sel' : ''} ${a.reverted ? 'rv' : ''}" data-id="${a.id}">
+      <div>${badge(a.kind)}${a.reverted ? '<span class="tag rev">revertida</span>' : ''}</div>
       <div style="min-width:0"><div class="t1">${esc(g.away_short)} @ ${esc(g.home_short)} <span class="muted">· ${MK[a.market]}${a.silenced ? ' · silenciada' : ''}</span></div><div class="t2">${esc(a.summary)}</div></div>
       <div class="mv"><div class="muted">${esc(a.from_label)}</div><div>→ ${esc(a.to_label)}</div></div>
       <div class="str">${a.strength}<i class="bar" style="--w:${a.strength}%;color:var(${KCOLOR[a.kind]})"></i><span class="muted">${ago(a.created_at)}</span></div>
@@ -238,9 +242,10 @@ function renderDetail() {
     </div>
     <div class="chips">${Object.keys(MK).map(k => `<button class="chip ${k === state.market ? 'on' : ''}" data-m="${k}">${MK[k]}</button>`).join('')}</div>
     ${nBooks ? `
-    <div class="stats">${stat('Primer snapshot', fmtVal(state.market, m.open, g))}${stat('Consenso actual', fmtVal(state.market, m.now, g))}${stat('Cambio', m.open == null ? '—' : fmtDiff(state.market, m.now - m.open))}${stat('Casas', nBooks)}</div>
+    <div class="stats">${stat('Apertura', fmtVal(state.market, m.open, g))}${stat('Consenso actual', fmtVal(state.market, m.now, g))}${stat('Neto vs apertura', m.net == null ? '—' : fmtDiff(state.market, m.net))}${stat('Máximo alcanzado', m.swing ? `${fmtVal(state.market, m.extreme, g)} (${fmtMag(state.market, m.swing)})` : 'no se movió')}</div>
+    <p class="sub" style="margin:-6px 0 10px">${m.open_at ? `Apertura observada el ${esc(fDay.format(dt(m.open_at)))} con ${m.open_books} casas` : 'Sin apertura registrada'}${m.state ? ` · ${STATES[m.state]}` : ''}${m.state === 'retorno' ? ` (llegó hasta ${esc(fmtVal(state.market, m.extreme, g))})` : ''}</p>
     <div class="chart"><canvas id="lineChart" role="img" aria-label="Historial del consenso y de cada casa"></canvas></div>
-    <div class="legend"><span><i class="sw" style="background:var(--accent)"></i>Consenso (mediana)</span><span><i class="sw" style="background:var(--faint)"></i>Cada casa (punteada = sharp)</span></div>
+    <div class="legend"><span><i class="sw" style="background:var(--accent)"></i>Consenso</span><span><i class="sw" style="background:var(--faint)"></i>Cada casa (punteada = sharp)</span><span><i class="sw" style="background:var(--rev)"></i>Apertura</span></div>
     ${renderSplits(g, m)}${renderBooks(g, m)}` : '<p class="empty">Sin líneas para este mercado todavía.</p>'}
     ${alert ? renderAlertBox(alert, g) : ''}`;
   el.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { state.market = b.dataset.m; state.alert = null; save(); renderDetail(); });
@@ -258,6 +263,10 @@ function drawChart(g, m) {
     label: bookName(b), data: idx.map(i => arr[i]), borderColor: col('--line-book'), borderWidth: 1,
     borderDash: isSharp(b) ? [4, 3] : [], pointRadius: 0, stepped: true, spanGaps: true, order: 2,
   }));
+  if (m.open != null) datasets.push({
+    label: 'Apertura', data: idx.map(() => m.open), borderColor: col('--rev'), borderWidth: 1.5,
+    borderDash: [6, 4], pointRadius: 0, spanGaps: true, order: 3,
+  });
   datasets.push({
     label: 'Consenso', data: idx.map(i => m.cons[i]), borderColor: col('--accent'), backgroundColor: col('--accent'),
     borderWidth: 2.5, pointRadius: idx.map((_, j) => j === idx.length - 1 ? 4 : 0), stepped: true, spanGaps: true, order: 1,
@@ -302,18 +311,21 @@ function renderBooks(g, m) {
   const rows = keys.map(k => {
     const c = cur[k];
     const diff = c.value != null && m.now != null ? c.value - m.now : null;
+    const own = c.open != null && c.value != null ? c.value - c.open : null;
     const tags = (isSharp(k) ? '<span class="tag">sharp</span>' : '') + (c.outlier ? '<span class="tag warn">fuera de consenso</span>' : '');
-    return `<tr class="${c.outlier ? 'hl' : ''}"><td>${esc(bookName(k))}${tags}</td><td class="num">${esc(fmtVal(state.market, c.value, g))}</td><td class="num">${fmtOdds(c.juice)}</td><td class="num">${fmtDiff(state.market, diff)}</td></tr>`;
+    return `<tr class="${c.outlier ? 'hl' : ''}"><td>${esc(bookName(k))}${tags}</td><td class="num">${esc(fmtVal(state.market, c.open, g))}</td><td class="num">${esc(fmtVal(state.market, c.value, g))}</td><td class="num">${fmtOdds(c.juice)}</td><td class="num">${own == null ? '—' : fmtDiff(state.market, own)}</td><td class="num">${fmtDiff(state.market, diff)}</td></tr>`;
   }).join('');
-  return `<div class="sec"><p class="kl">Por casa · último snapshot</p><div class="table-wrap"><table><thead><tr><th>Casa</th><th class="num">${state.market === 'h2h' ? 'Prob. local' : 'Línea'}</th><th class="num">${priceHead}</th><th class="num">Vs. consenso</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  return `<div class="sec"><p class="kl">Por casa · último snapshot</p><div class="table-wrap"><table><thead><tr><th>Casa</th><th class="num">Apertura</th><th class="num">${state.market === 'h2h' ? 'Prob. local' : 'Línea'}</th><th class="num">${priceHead}</th><th class="num">Vs. apertura</th><th class="num">Vs. consenso</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 function renderAlertBox(a, g) {
   const movers = (a.details?.movers || []).map(x => `${bookName(x.book)} ${fmtVal(a.market, x.from, g)} → ${fmtVal(a.market, x.to, g)}`).join(' · ');
-  const status = a.silenced ? 'no se envía (ruido)' : a.sent ? 'enviada a Telegram' : 'no enviada';
+  const status = (a.silenced ? 'no se envía (ruido)' : a.sent ? 'enviada a Telegram' : 'no enviada')
+    + (a.reverted ? ' · revertida: la línea regresó a su apertura' : '');
   return `<div class="sec"><p class="kl">Alerta · ${status}</p><div class="alert-box">
     ${badge(a.kind)} <b>${a.strength}/100</b> <span class="muted">· ${fDay.format(dt(a.created_at))}</span>
     <p>${esc(a.summary)}</p>
     ${movers ? `<p class="muted" style="font-size:12px">${esc(movers)}</p>` : ''}
+    ${a.details?.open_text ? `<p class="muted" style="font-size:12px">${esc(a.details.open_text)}</p>` : ''}
     ${a.details?.splits_text ? `<p class="muted" style="font-size:12px">${esc(a.details.splits_text)}</p>` : ''}
     ${a.message ? `<pre class="tg">${esc(a.message)}</pre>` : ''}
   </div></div>`;
@@ -328,16 +340,24 @@ function renderGames() {
     const moved = m.open != null && Math.abs(m.now - m.open) > 1e-6;
     return `${moved ? `<span class="muted">${esc(fmtVal(k, m.open, g))} → </span>` : ''}${esc(fmtVal(k, m.now, g))}`;
   };
+  const drift = g => {
+    const m = g.markets.spreads;
+    if (!m || m.net == null) return '<span class="muted">—</span>';
+    if (m.state === 'retorno') return `<span class="badge b-reversion">volvió · ${esc(fmtMag('spreads', m.swing))} de ida y vuelta</span>`;
+    if (m.state === 'estable') return '<span class="muted">sin cambio</span>';
+    const peak = m.swing > Math.abs(m.net) + 1e-6 ? ` <span class="muted">· llegó a ${esc(fmtVal('spreads', m.extreme, g))}</span>` : '';
+    return `${esc(fmtDiff('spreads', m.net))}${peak}`;
+  };
   const splitCell = g => {
     const s = g.markets.spreads?.splits || {};
     const h = (s.actionnetwork || s.dknetwork)?.home;
     if (!h) return '<span class="muted">—</span>';
     return `${h.tickets == null ? '—' : Math.round(h.tickets) + '%'} / ${h.money == null ? '—' : Math.round(h.money) + '%'}`;
   };
-  const head = '<thead><tr><th>Kickoff</th><th>Partido</th><th>Spread</th><th>Total</th><th>Moneyline</th><th>Local: tickets / dinero</th><th class="num">Alertas</th></tr></thead>';
+  const head = '<thead><tr><th>Kickoff</th><th>Partido</th><th>Spread</th><th>Spread vs. apertura</th><th>Total</th><th>Moneyline</th><th>Local: tickets / dinero</th><th class="num">Alertas</th></tr></thead>';
   const body = D.games.map(g => {
     const n = D.alerts.filter(a => a.event_id === g.id && a.kind !== 'noise').length;
-    return `<tr class="${g.id === state.game ? 'sel' : ''}" data-g="${g.id}"><td>${g.started ? 'En juego' : fDay.format(dt(g.commence))}</td><td>${esc(g.away_short)} @ ${esc(g.home_short)}</td><td>${cell(g, 'spreads')}</td><td>${cell(g, 'totals')}</td><td>${cell(g, 'h2h')}</td><td>${splitCell(g)}</td><td class="num">${n || ''}</td></tr>`;
+    return `<tr class="${g.id === state.game ? 'sel' : ''}" data-g="${g.id}"><td>${g.started ? 'En juego' : fDay.format(dt(g.commence))}</td><td>${esc(g.away_short)} @ ${esc(g.home_short)}</td><td>${cell(g, 'spreads')}</td><td>${drift(g)}</td><td>${cell(g, 'totals')}</td><td>${cell(g, 'h2h')}</td><td>${splitCell(g)}</td><td class="num">${n || ''}</td></tr>`;
   }).join('');
   $('games').innerHTML = head + '<tbody>' + body + '</tbody>';
   $('games').querySelectorAll('[data-g]').forEach(r => r.onclick = () => {

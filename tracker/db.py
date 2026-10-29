@@ -44,6 +44,19 @@ CREATE TABLE IF NOT EXISTS splits (
     money_pct REAL,
     PRIMARY KEY (snapshot_id, event_id, source, market, side)
 );
+CREATE TABLE IF NOT EXISTS openings (
+    event_id TEXT NOT NULL,
+    market TEXT NOT NULL,
+    book TEXT NOT NULL,
+    value REAL NOT NULL,
+    price INTEGER,
+    snapshot_id INTEGER NOT NULL,
+    seen_at TEXT NOT NULL,
+    high REAL NOT NULL,
+    low REAL NOT NULL,
+    books INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (event_id, market, book)
+);
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     snapshot_id INTEGER NOT NULL,
@@ -59,9 +72,11 @@ CREATE TABLE IF NOT EXISTS alerts (
     silenced INTEGER NOT NULL DEFAULT 0,
     sent INTEGER NOT NULL DEFAULT 0,
     message TEXT,
+    reverted INTEGER NOT NULL DEFAULT 0,
     dedupe_key TEXT UNIQUE
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts (created_at);
+CREATE INDEX IF NOT EXISTS idx_alerts_event ON alerts (event_id, market);
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -81,12 +96,28 @@ def parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+MIGRATIONS = (
+    ("alerts", "message", "TEXT"),
+    ("alerts", "reverted", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Agrega columnas nuevas a bases creadas por versiones anteriores."""
+    for table, column, decl in MIGRATIONS:
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    conn.commit()
+
+
 def connect(path: Path | str) -> sqlite3.Connection:
     if str(path) != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    migrate(conn)
     return conn
 
 
@@ -170,6 +201,10 @@ def prune(conn: sqlite3.Connection, now: datetime, keep_days: int, archive_days:
     # El ruido solo se muestra en el dashboard reciente: no se archiva (~75% del peso de alertas).
     conn.execute("DELETE FROM alerts WHERE kind = 'noise' AND created_at < ?", (cutoff,))
     conn.execute("DELETE FROM events WHERE commence_time < ?", (archive_cutoff,))
+    # Las aperturas viven mientras exista el partido: son la base de comparación
+    # y deben sobrevivir al borrado de líneas.
+    conn.execute("DELETE FROM openings WHERE NOT EXISTS "
+                 "(SELECT 1 FROM events e WHERE e.id = openings.event_id)")
     conn.commit()
     if conn.total_changes > before:
         conn.execute("VACUUM")

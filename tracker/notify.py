@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 DAYS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
-ICONS = {"info": "📰", "steam": "🔥", "rlm": "🔄", "gradual": "📈", "noise": "•"}
+ICONS = {"info": "📰", "steam": "🔥", "rlm": "🔄", "gradual": "📈", "reversion": "↩️", "noise": "•"}
 
 
 def kickoff_label(value: str) -> str:
@@ -29,12 +29,20 @@ def format_message(event, market: str, signals: list[Signal]) -> str:
         f"<b>{html.escape(event['away'])} @ {html.escape(event['home'])}</b>",
         f"Kickoff: {kickoff_label(event['commence_time'])}",
     ]
+    opening = _first_detail(ordered, "open_text")
+    if opening:
+        lines.append(html.escape(opening))
     for s in ordered:
         lines += ["", f"<b>{KIND_NAMES[s.kind]}</b> · fuerza {s.strength}/100", html.escape(s.summary)]
     splits_text = next((s.details.get("splits_text") for s in ordered if s.details.get("splits_text")), None)
     if splits_text:
         lines += ["", html.escape(splits_text)]
     return "\n".join(lines)
+
+
+def _first_detail(signals: list[Signal], key: str):
+    """Primer valor no vacío de ese campo entre las señales del mensaje."""
+    return next((s.details.get(key) for s in signals if s.details.get(key)), None)
 
 
 def plain(text: str) -> str:
@@ -55,6 +63,8 @@ def process(conn, snapshot_id: int, signals: list[Signal], dry_run: bool = False
         )
         if cur.rowcount:
             new.append((cur.lastrowid, s))
+            if s.kind == "reversion":
+                mark_reverted(conn, s.event_id, s.market, snapshot_id)
 
     groups = defaultdict(list)
     for alert_id, s in new:
@@ -79,6 +89,18 @@ def process(conn, snapshot_id: int, signals: list[Signal], dry_run: bool = False
             log.error("No se pudo enviar a Telegram: %s", exc)
     conn.commit()
     return {"signals": len(signals), "new": len(new), "messages": len(groups), "sent": sent}
+
+
+def mark_reverted(conn, event_id: str, market: str, snapshot_id: int) -> int:
+    """Marca las alertas anteriores del mercado: su movimiento ya se deshizo.
+
+    Solo las de snapshots previos; las de este mismo snapshot describen el regreso."""
+    cur = conn.execute(
+        """UPDATE alerts SET reverted = 1 WHERE event_id = ? AND market = ? AND snapshot_id < ?
+           AND kind NOT IN ('noise', 'reversion') AND reverted = 0""",
+        (event_id, market, snapshot_id),
+    )
+    return cur.rowcount
 
 
 def system(conn, key: str, text: str, dry_run: bool = False) -> None:

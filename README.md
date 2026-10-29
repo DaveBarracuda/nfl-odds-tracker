@@ -54,9 +54,31 @@ La base local (`data/tracker.db`) es independiente de la rama `state`. `scripts/
 - **Líneas:** The Odds API — Pinnacle, LowVig, BetOnline (sharp), DraftKings, FanDuel, BetMGM, ESPN Bet, BetRivers, Hard Rock, Bovada.
 - **Splits:** Action Network (consenso, JSON) y DK Network (splits propios de DraftKings, HTML). No son APIs oficiales: si una falla, el snapshot sigue y queda registrado en el log.
 
+## La línea de apertura es la base
+
+Cada snapshot se mide contra **dos** referencias:
+
+1. **El snapshot anterior**, que da la velocidad: cuántas casas se movieron y en cuánto tiempo.
+2. **La línea de apertura**, que dice si el movimiento es real o ya se deshizo.
+
+La apertura se guarda la primera vez que el tracker ve el partido, por casa y para el consenso (este último solo cuando hay al menos 3 casas, para que una casa madrugadora no fije la referencia). Es la primera línea **observada**, no necesariamente la primera que publicó la casa: por eso el dashboard muestra siempre la fecha y con cuántas casas se registró.
+
+De ahí salen tres lecturas, visibles en cada alerta y en el dashboard:
+
+| Estado | Qué significa |
+|---|---|
+| Sostenido | El neto contra la apertura llega al umbral de movimiento: hubo un aumento o un decaimiento real. |
+| Leve | Se movió, pero por debajo del umbral. |
+| Retorno | La línea volvió exactamente a su apertura después de un recorrido de ida y vuelta real (≥ 1 pt en spread, 1.5 en total, 4 pp en ML). |
+| Estable | Nunca se despegó de la apertura. |
+
+Además se guarda el **máximo alcanzado**: hasta dónde llegó la línea desde que abrió. Un partido puede estar hoy a medio punto de su apertura habiendo recorrido punto y medio, y eso se ve en el dashboard y en la tabla de partidos. Los extremos sobreviven al borrado de historial, así que el recorrido no se pierde aunque se compacten las líneas viejas.
+
+Cuando se detecta un retorno, las alertas previas de ese partido y mercado quedan marcadas como **revertidas** en el dashboard: su movimiento ya no se sostiene.
+
 ## Cómo se clasifica
 
-Para cada partido y mercado se calcula el consenso y se compara contra el snapshot anterior. En spread y total el consenso es la línea que más casas repiten (en empate, la de las casas sharp); en moneyline es la mediana de la probabilidad implícita sin vig del local. Las casas que se alejan demasiado de la mediana quedan fuera.
+Para cada partido y mercado se calcula el consenso y se compara contra el snapshot anterior y contra la apertura. En spread y total el consenso es la línea que más casas repiten (en empate, la de las casas sharp); en moneyline es la mediana de la probabilidad implícita sin vig del local. Las casas que se alejan demasiado de la mediana quedan fuera.
 
 | Tipo | Regla | Telegram |
 |---|---|---|
@@ -64,9 +86,14 @@ Para cada partido y mercado se calcula el consenso y se compara contra el snapsh
 | Vapor | ≥ 3 casas se mueven igual en ≤ 75 min y ≤ 1 en contra. Suma si una casa sharp se movió primero. | Sí |
 | RLM | El consenso se mueve ≥ 0.5 pts (2 pp en ML) contra el lado con ≥ 60% de tickets. Suma si el dinero va con el movimiento. | Sí |
 | Gradual | ≥ 3 pasos seguidos en la misma dirección, ≥ 1 pt (1.5 total, 4 pp ML) acumulado en ≥ 3 h dentro de 72 h. | Sí |
+| Retorno | La línea regresa a su apertura tras alejarse ≥ 1 pt (1.5 total, 4 pp ML). El movimiento anterior no se sostuvo. | Sí |
 | Ruido | 1–2 casas se mueven, direcciones mixtas, solo juice, huecos sin snapshots o una casa fuera de consenso. | No, solo dashboard |
 
+Un movimiento que se aleja de la apertura suma fuerza; uno que la deshace resta. Cada alerta incluye su posición contra la apertura, tanto en Telegram como en el dashboard.
+
 Las alertas del mismo partido y mercado se agrupan en un mensaje. Si falla un snapshot o quedan menos de 100 créditos llega un aviso único. Los umbrales están en `tracker/config.py` (`THRESHOLDS`).
+
+El código está repartido así: `market.py` (valor de cada casa, consenso y formato), `openings.py` (apertura y comparación contra ella), `rules.py` (una función por tipo de movimiento) y `detect.py` (orquestación).
 
 ## Retención
 
@@ -77,5 +104,7 @@ Se conserva toda la temporada sin que la base pase de ~45 MB (GitHub rechaza arc
 | Últimos 8 días (`KEEP_DAYS`) | Todas las líneas y splits. La detección usa 72 h y el dashboard 7 días. |
 | Hasta 200 días (`ARCHIVE_DAYS`) | Por partido: apertura, cierre (último snapshot antes del kickoff) y el primer snapshot de cada día, con sus splits. Alertas de información, vapor, RLM y graduales, y los eventos. |
 | Más de 200 días | Se borra todo. |
+
+Las aperturas se conservan mientras exista el partido, aunque sus líneas ya se hayan compactado.
 
 Las alertas de ruido se borran a los 8 días: solo sirven para el dashboard.
