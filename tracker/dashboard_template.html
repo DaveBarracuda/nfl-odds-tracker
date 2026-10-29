@@ -185,7 +185,7 @@ function renderHeader() {
     ['Alertas 24 h', s.alerts_24h, `+${s.silenced_24h} silenciadas`],
     ['Créditos usados 24 h', s.credits_24h, `${s.snapshots_24h} snapshots`],
     ['Créditos restantes', s.credits_remaining ?? '—', low ? 'nivel bajo' : (s.credits_used != null ? `${s.credits_used} usados en el periodo` : '')],
-    ['Próxima ejecución', fTime.format(dt(s.next_run)), s.next_snapshot ? `con snapshot (${s.next_reason})` : `sin snapshot: ${s.next_reason}`],
+    ['Próximo snapshot', s.next_run ? fTime.format(dt(s.next_run)) : '—', s.next_reason],
   ];
   $('kpis').innerHTML = kpis.map(([l, v, sub]) => `<div class="kpi"><p class="kl">${esc(l)}</p><p class="kv">${esc(v)}</p><p class="ks">${esc(sub)}</p></div>`).join('');
 }

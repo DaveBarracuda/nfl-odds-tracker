@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 import sys
+from datetime import timedelta
 from logging.handlers import RotatingFileHandler
 
 from . import (config, dashboard, db, detect, notify, odds_api, openings, scheduler,
@@ -51,6 +52,23 @@ def take_snapshot(conn, now, reason: str):
     return snapshot_id, usage
 
 
+def _warn_if_chain_broke(conn, now, last, dry_run: bool) -> None:
+    """El loop del workflow deja huecos de minutos; uno de horas significa que la
+    cadena de ejecuciones se rompió y la revivió el cron de respaldo."""
+    if last is None:
+        return
+    minutes = (now - db.parse_iso(last["taken_at"])).total_seconds() / 60
+    if minutes >= config.STALE_GAP_MIN:
+        notify.system(
+            conn, "stale-gap",
+            f"⚠️ <b>Odds Tracker</b>: {minutes / 60:.1f} h sin snapshot. La cadena de "
+            "ejecuciones se cortó y acaba de reanudarse.",
+            dry_run,
+        )
+    else:
+        notify.clear_system(conn, "stale-gap")
+
+
 def cmd_run(args) -> int:
     conn = db.connect(config.DB_PATH)
     now = db.utcnow()
@@ -63,7 +81,8 @@ def cmd_run(args) -> int:
         notify.system(conn, f"events-error:{str(exc)[:80]}", f"⚠️ <b>Odds Tracker</b>: error al leer partidos: {exc}", args.dry_run)
         return 1
 
-    should, reason = (True, "manual") if args.force else scheduler.should_snapshot(now, events, db.last_snapshot(conn))
+    last = db.last_snapshot(conn)
+    should, reason = (True, "manual") if args.force else scheduler.should_snapshot(now, events, last)
     if not should:
         log.info("Sin snapshot: %s", reason)
         dashboard.render(conn, now)
@@ -77,6 +96,7 @@ def cmd_run(args) -> int:
         dashboard.render(conn, now)
         return 1
     openings.ensure(conn, snapshot_id)
+    _warn_if_chain_broke(conn, now, last, args.dry_run)
     notify.clear_system(conn, "odds-error")
     notify.clear_system(conn, "events-error")
 
@@ -140,6 +160,32 @@ def cmd_sync(args) -> int:
     return 0
 
 
+def cmd_next(args) -> int:
+    """Cuándo toca el próximo snapshot. El loop del workflow usa --seconds para dormir
+    exactamente lo que falta, en vez de despertar en balde."""
+    conn = db.connect(config.DB_PATH)
+    now = db.utcnow()
+    # Solo partidos que la API siguió devolviendo: uno cancelado conserva su kickoff
+    # futuro en la base y haría creer al loop que hay que apretar la cadencia.
+    fresh = db.iso(now - timedelta(hours=config.EVENT_FRESH_HOURS))
+    known = conn.execute(
+        "SELECT 1 FROM events WHERE updated_at >= ? LIMIT 1", (fresh,)
+    ).fetchone() is not None
+    upcoming = conn.execute(
+        "SELECT commence_time FROM events WHERE commence_time > ? AND updated_at >= ?",
+        (db.iso(now), fresh),
+    ).fetchall()
+    last = db.last_snapshot(conn)
+    due = scheduler.due_at(now, upcoming, last)
+    if args.seconds:
+        print(scheduler.wait_seconds(now, upcoming, last, known_schedule=known))
+    elif due is None:
+        print("No toca snapshot en el horizonte.")
+    else:
+        print(f"Próximo snapshot: {due.astimezone(config.TIMEZONE):%Y-%m-%d %H:%M}")
+    return 0
+
+
 def cmd_status(args) -> int:
     conn = db.connect(config.DB_PATH)
     now = db.utcnow()
@@ -151,9 +197,12 @@ def cmd_status(args) -> int:
         taken = db.parse_iso(last["taken_at"]).astimezone(config.TIMEZONE)
         print(f"Último snapshot: {taken:%Y-%m-%d %H:%M} ({last['reason']}) · restan {last['credits_remaining']} créditos")
     upcoming = conn.execute("SELECT commence_time FROM events WHERE commence_time > ?", (db.iso(now),)).fetchall()
-    nxt = scheduler.next_slot(now)
-    should, reason = scheduler.should_snapshot(nxt, upcoming, last)
-    print(f"Próxima ejecución {nxt.astimezone(config.TIMEZONE):%H:%M}: {'snapshot' if should else 'sin snapshot'} ({reason})")
+    due = scheduler.due_at(now, upcoming, last)
+    reason = scheduler.should_snapshot(due or now, upcoming, last)[1]
+    if due is None:
+        print(f"Próximo snapshot: no toca en el horizonte ({reason})")
+    else:
+        print(f"Próximo snapshot {due.astimezone(config.TIMEZONE):%H:%M} ({reason})")
     print(f"Casas: {', '.join(config.BOOKMAKERS)}")
     print(f"Telegram: {'listo' if telegram.is_configured() else 'falta TELEGRAM_CHAT_ID (python -m tracker telegram-setup)'}")
     return 0
@@ -223,7 +272,11 @@ def main(argv=None) -> int:
     p.add_argument("--open", action="store_true")
     p.set_defaults(func=cmd_sync)
 
-    sub.add_parser("status", help="Estado, créditos y próxima ejecución").set_defaults(func=cmd_status)
+    p = sub.add_parser("next", help="Cuándo toca el próximo snapshot")
+    p.add_argument("--seconds", action="store_true", help="Solo los segundos de espera (lo usa el loop)")
+    p.set_defaults(func=cmd_next)
+
+    sub.add_parser("status", help="Estado, créditos y próximo snapshot").set_defaults(func=cmd_status)
 
     p = sub.add_parser("telegram-setup", help="Guarda el chat ID de Telegram en .env")
     p.add_argument("--chat-id")

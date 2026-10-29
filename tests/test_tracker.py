@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from tracker import dashboard, db, detect, notify, odds_api, openings, scheduler, splits
+from tracker import config, dashboard, db, detect, notify, odds_api, openings, scheduler, splits
 
 BOOKS = ["pinnacle", "lowvig", "betonlineag", "draftkings", "fanduel",
          "betmgm", "espnbet", "betrivers", "hardrockbet", "bovada"]
@@ -196,9 +196,47 @@ class SchedulerTests(unittest.TestCase):
     def test_no_games(self):
         self.assertFalse(scheduler.should_snapshot(T0, [], None)[0])
 
-    def test_next_slot(self):
-        self.assertEqual(scheduler.next_slot(T0 + timedelta(minutes=7)), T0 + timedelta(minutes=37))
-        self.assertEqual(scheduler.next_slot(T0 + timedelta(minutes=41)), T0 + timedelta(minutes=67))
+    def test_closing_window_tightens_cadence(self):
+        """Pegado al kickoff los snapshots se juntan: es la linea de cierre, la base del CLV."""
+        now = T0 + timedelta(hours=3) - timedelta(minutes=20)
+        self.assertEqual(scheduler.should_snapshot(now, self.events, self.last(10, now)), (True, "cierre"))
+        self.assertFalse(scheduler.should_snapshot(now, self.events, self.last(5, now))[0])
+
+    def test_due_at_agrees_with_should_snapshot(self):
+        last = self.last(30)
+        due = scheduler.due_at(T0, self.events, last)
+        self.assertEqual(due, T0 + timedelta(minutes=25))
+        self.assertTrue(scheduler.should_snapshot(due, self.events, last)[0])
+        self.assertFalse(scheduler.should_snapshot(due - timedelta(minutes=1), self.events, last)[0])
+
+    def test_due_at_anticipates_the_next_tier(self):
+        """A 2h10 del kickoff toca en 10 min, cuando se entra a la ventana pregame; no en 35."""
+        now = T0 + timedelta(hours=3) - timedelta(minutes=130)
+        last = self.last(20, now)
+        due = scheduler.due_at(now, self.events, last)
+        self.assertEqual(due, now + timedelta(minutes=10))
+        self.assertEqual(scheduler.should_snapshot(due, self.events, last)[1], "pregame")
+
+    def test_due_at_is_now_when_already_due(self):
+        self.assertEqual(scheduler.due_at(T0, self.events, None), T0)
+
+    def test_due_at_without_games(self):
+        self.assertIsNone(scheduler.due_at(T0, [], None))
+
+    def test_wait_seconds_runs_now_when_the_schedule_is_unknown(self):
+        """Con la tabla de partidos vacia no se sabe si toca: hay que correr ya para
+        traerla, no dormir una hora."""
+        self.assertEqual(scheduler.wait_seconds(T0, [], None, known_schedule=False), 0)
+
+    def test_wait_seconds_waits_when_the_season_is_over(self):
+        """Con partidos conocidos pero todos jugados, dormir el ciclo completo."""
+        self.assertEqual(
+            scheduler.wait_seconds(T0, [], None, known_schedule=True),
+            config.HOURLY_GAP_MIN * 60,
+        )
+
+    def test_wait_seconds_counts_down_to_the_due_moment(self):
+        self.assertEqual(scheduler.wait_seconds(T0, self.events, self.last(30)), 25 * 60)
 
 
 DK_HTML = """

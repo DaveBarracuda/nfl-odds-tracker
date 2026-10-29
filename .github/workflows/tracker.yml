@@ -1,32 +1,48 @@
 name: Tracker NFL
 
+# El cron de GitHub se retrasa horas en repos poco activos: medido sobre 40 corridas
+# programadas, los huecos fueron de 124 a 444 min y ninguno bajó de 40. Por eso la
+# cadencia no la pone el cron, sino este job: vive 5.5 h, duerme exactamente hasta el
+# instante que marca `python -m tracker next` y al terminar se relanza a sí mismo con
+# workflow_dispatch (la excepción documentada a que el token del workflow no dispara
+# workflows). El cron cada 3 h solo revive la cadena si se rompe.
+#
+# Para detener la cadena: `gh workflow disable tracker.yml`, o cancelar la corrida en curso
+# desde Actions (al cancelar no se relanza). Reactivar con `gh workflow enable tracker.yml`.
 on:
-  schedule:
-    # Cada 30 minutos. El tracker decide si toca snapshot (cada hora, o cada
-    # 30 min cuando un partido arranca en 2 h o menos).
-    - cron: "7,37 * * * *"
   workflow_dispatch:
     inputs:
       force:
-        description: "Tomar snapshot aunque no toque (gasta 3 créditos)"
+        description: "Tomar snapshot en la primera pasada aunque no toque (gasta 3 créditos)"
         type: boolean
         default: false
       dry_run:
         description: "No enviar alertas a Telegram"
         type: boolean
         default: false
+      once:
+        description: "Una sola pasada, sin loop ni relanzamiento"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "11 */3 * * *"   # respaldo; queda en espera mientras el loop corre
 
 permissions:
   contents: write
+  actions: write            # para relanzarse con workflow_dispatch
 
 concurrency:
   group: tracker
   cancel-in-progress: false
 
+env:
+  LOOP_SECONDS: "19800"     # 5.5 h; el límite de un job son 6 h
+  MIN_RUN_SECONDS: "300"    # si el job muere antes, espera antes de relanzar
+
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 355
     env:
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -41,35 +57,121 @@ jobs:
       - name: Recuperar estado (rama state)
         run: |
           mkdir -p data
-          if git ls-remote --exit-code --heads origin state > /dev/null; then
+          # ls-remote devuelve 2 si la rama no existe y 128 ante un error de red. Hay que
+          # distinguirlos: tratar un fallo de red como "no hay estado" arrancaría una base
+          # vacía que el primer save_state empujaría por encima del historial de la temporada.
+          set +e
+          git ls-remote --exit-code --heads origin state > /dev/null
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
             git fetch --depth=1 origin state
             git show FETCH_HEAD:tracker.db > data/tracker.db
             echo "Estado recuperado: $(du -h data/tracker.db | cut -f1)"
-          else
+          elif [ "$code" -eq 2 ]; then
             echo "Sin estado previo: se crea una base nueva"
+          else
+            echo "::error::no se pudo consultar la rama state (código $code); aborto para no sobrescribir el historial"
+            exit 1
           fi
 
-      - name: Ejecutar tracker
-        run: |
-          FLAGS=""
-          if [ "${{ inputs.force }}" = "true" ]; then FLAGS="$FLAGS --force"; fi
-          if [ "${{ inputs.dry_run }}" = "true" ]; then FLAGS="$FLAGS --dry-run"; fi
-          python -m tracker run $FLAGS
-
-      - name: Guardar estado (rama state)
-        if: always()
+      - name: Loop de snapshots
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          [ -f data/tracker.db ] || { echo "No hay base que guardar"; exit 0; }
-          STATE=$(mktemp -d)
-          cp data/tracker.db "$STATE/"
-          [ -f dashboard/index.html ] && cp dashboard/index.html "$STATE/dashboard.html"
-          cd "$STATE"
-          printf '# Estado del tracker\n\nLo escribe el workflow en cada ejecución (un solo commit, se reemplaza). Descarga `dashboard.html` y ábrelo en el navegador.\n' > README.md
-          git init -q -b state
-          git add -A
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -q -m "Estado $(date -u +%Y-%m-%dT%H:%MZ)"
-          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" state
-          echo "Estado guardado"
+          echo "LOOP_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
+          # La rama state es un solo commit que se reemplaza: la base SQLite guarda la
+          # historia y el repo no crece.
+          STATE="$RUNNER_TEMP/state"
+          mkdir -p "$STATE"
+          git init -q -b state "$STATE"
+          git -C "$STATE" config user.name "github-actions[bot]"
+          git -C "$STATE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          save_state() {
+            if [ ! -f data/tracker.db ]; then echo "No hay base que guardar"; return 0; fi
+            cp data/tracker.db "$STATE/tracker.db"
+            if [ -f dashboard/index.html ]; then cp dashboard/index.html "$STATE/dashboard.html"; fi
+            printf '# Estado del tracker\n\nLo escribe el workflow en cada snapshot (un solo commit, se reemplaza). Descarga `dashboard.html` y ábrelo en el navegador.\n' > "$STATE/README.md"
+            git -C "$STATE" add -A
+            if git -C "$STATE" diff --cached --quiet; then echo "Sin cambios que guardar"; return 0; fi
+            MSG="Estado $(date -u +%Y-%m-%dT%H:%MZ)"
+            if git -C "$STATE" rev-parse -q --verify HEAD > /dev/null; then
+              git -C "$STATE" commit -q --amend -m "$MSG"
+            else
+              git -C "$STATE" commit -q -m "$MSG"
+            fi
+            git -C "$STATE" push -q --force \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:state \
+              || echo "::warning::no se pudo guardar el estado"
+          }
+
+          FLAGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then FLAGS="$FLAGS --dry-run"; fi
+          PASS_FLAGS="$FLAGS"
+          # force y once son para probar: actúan de inmediato, no se quedan esperando turno.
+          NOW_FIRST=0
+          if [ "${{ inputs.force }}" = "true" ]; then PASS_FLAGS="$PASS_FLAGS --force"; NOW_FIRST=1; fi
+          if [ "${{ inputs.once }}" = "true" ]; then NOW_FIRST=1; fi
+
+          end=$(( SECONDS + LOOP_SECONDS ))
+          fails=0
+          first=1
+          while : ; do
+            # El scheduler decide la cadencia: se duerme lo que falte, sin despertares
+            # en balde. Horario, cada 25 min en pregame, cada 9 min pegado al kickoff.
+            wait=$(python -m tracker next --seconds 2>/dev/null || true)
+            case "$wait" in ''|*[!0-9]*) wait=300 ;; esac
+            # Piso de 60 s: si la API de partidos falla, `tracker run` no toma snapshot
+            # y `next` seguiría devolviendo 0, girando sin freno. El nivel más apretado
+            # es de 9 min, así que este piso nunca estorba.
+            if [ "$wait" -lt 60 ]; then wait=60; fi
+            if [ "$first" = "1" ] && [ "$NOW_FIRST" = "1" ]; then wait=0; fi
+            first=0
+            left=$(( end - SECONDS ))
+            if [ "$wait" -ge "$left" ]; then
+              echo "Quedan ${left}s de corrida y el próximo snapshot es en ${wait}s: cierro y relanzo la cadena"
+              break
+            fi
+            if [ "$wait" -gt 0 ]; then
+              echo "Durmiendo ${wait}s hasta el próximo snapshot"
+              sleep "$wait"
+            fi
+            # Backoff ante una causa persistente (créditos agotados, 429, API caída):
+            # un snapshot con error no cuenta como "último", así que sin esto se
+            # reintentaría cada 60 s durante las 5.5 h y en cada cadena siguiente.
+            if python -m tracker run $PASS_FLAGS; then
+              fails=0
+            else
+              fails=$(( fails + 1 ))
+              backoff=$(( 60 * fails * fails ))
+              if [ "$backoff" -gt 900 ]; then backoff=900; fi
+              echo "::warning::la corrida falló ($fails seguidas); espero ${backoff}s antes de reintentar"
+              sleep "$backoff"
+            fi
+            PASS_FLAGS="$FLAGS"   # --force solo en la primera pasada
+            save_state
+            if [ "${{ inputs.once }}" = "true" ]; then
+              echo "Modo once: una sola pasada"
+              break
+            fi
+          done
+
+      - name: Relanzar la cadena
+        # Al cancelar no se relanza: cancelar la corrida en la UI detiene la cadena, igual
+        # que `gh workflow disable`. Tampoco se relanza una prueba con dry_run, porque la
+        # cadena nueva no heredaría la bandera y empezaría a mandar alertas de verdad.
+        if: ${{ !cancelled() && inputs.once != true && inputs.dry_run != true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Si el job murió pronto (error de arranque), espera antes de relanzar para
+          # no encadenar corridas en bucle cerrado.
+          age=$(( $(date +%s) - ${LOOP_STARTED:-0} ))
+          if [ -z "${LOOP_STARTED:-}" ] || [ "$age" -lt "$MIN_RUN_SECONDS" ]; then
+            echo "La corrida duró ${age}s: espero ${MIN_RUN_SECONDS}s antes de relanzar"
+            sleep "$MIN_RUN_SECONDS"
+          fi
+          gh workflow run tracker.yml --ref "${{ github.ref_name }}" -R "${{ github.repository }}" \
+            || echo "::warning::no se pudo relanzar la cadena; el cron de respaldo la revive"

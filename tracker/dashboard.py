@@ -114,8 +114,8 @@ def _status(conn, now: datetime, last) -> dict:
         "SELECT commence_time FROM events WHERE commence_time > ? AND commence_time <= ?",
         (db.iso(now), db.iso(now + timedelta(days=config.LOOKAHEAD_DAYS))),
     ).fetchall()
-    next_run = scheduler.next_slot(now)
-    next_snapshot, next_reason = scheduler.should_snapshot(next_run, upcoming, last)
+    due = scheduler.due_at(now, upcoming, last)
+    reason = scheduler.should_snapshot(due or now, upcoming, last)[1]
     return {
         "last_snapshot": last["taken_at"] if last else None,
         "last_error": latest_any["error"] if latest_any and latest_any["error"] else None,
@@ -123,7 +123,7 @@ def _status(conn, now: datetime, last) -> dict:
         "credits_used": last["credits_used"] if last else None,
         "snapshots_24h": usage["n"], "credits_24h": usage["credits"],
         "alerts_24h": counts["shown"], "silenced_24h": counts["muted"],
-        "next_run": db.iso(next_run), "next_snapshot": next_snapshot, "next_reason": next_reason,
+        "next_run": db.iso(due) if due else None, "next_reason": reason,
     }
 
 

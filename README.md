@@ -4,12 +4,31 @@ Toma snapshots de momios NFL de 10 casas, junta los % de tickets y dinero, clasi
 
 ## Cómo corre
 
-El workflow [`.github/workflows/tracker.yml`](.github/workflows/tracker.yml) se ejecuta cada 30 minutos (:07 y :37). En cada ejecución:
+El `cron` de GitHub Actions no sirve para esto: medido sobre 40 ejecuciones programadas, los huecos fueron de **124 a 444 minutos** y ninguno bajó de 40, cuando el cron pedía cada 30. GitHub desprioriza los disparos programados de los repos poco activos y no hay forma de exigirle puntualidad.
+
+Así que la cadencia no la pone el cron, sino el propio job de [`.github/workflows/tracker.yml`](.github/workflows/tracker.yml):
 
 1. Recupera la base SQLite de la rama `state`.
-2. Decide si toca snapshot: si pasaron 55 min o más desde el último, o 25 min o más cuando un partido arranca en las próximas 2 horas. Se compara contra el último snapshot y no contra el reloj, porque el cron de GitHub puede retrasarse varios minutos.
+2. Le pregunta a `python -m tracker next --seconds` cuánto falta para el próximo snapshot y **duerme exactamente eso**. No despierta en balde, así que no gasta créditos de más.
 3. Toma el snapshot, busca splits, detecta movimientos y manda alertas a Telegram.
 4. Guarda la base y el dashboard en la rama `state` (un solo commit que se reemplaza, así el repo no crece).
+5. Repite hasta cumplir 5.5 h (el límite de un job son 6) y entonces **se relanza a sí mismo** con `workflow_dispatch`, que es la excepción documentada a que el token del workflow no puede disparar workflows. La cadena se sostiene sola.
+
+El `cron` cada 3 horas quedó solo como respaldo: mientras el loop vive, los disparos programados esperan detrás del grupo de concurrencia, y si la cadena se rompe, el siguiente la revive. Si un snapshot llega con un hueco de más de 2.5 h, el tracker avisa por Telegram que la cadena se cortó.
+
+Para detener la cadena: `gh workflow disable tracker.yml` (reactivar con `enable`).
+
+### Cadencia
+
+El espaciado se aprieta conforme se acerca el kickoff, porque lo que vale para el modelo de picks es la línea de cierre:
+
+| Cuándo | Un snapshot cada | Nivel |
+|---|---|---|
+| Más de 2 h antes del kickoff | 55 min | `horario` |
+| 2 h antes o menos | 25 min | `pregame` |
+| 30 min antes o menos | 9 min | `cierre` |
+
+Medido en simulación contra un calendario real de 14 partidos, el último snapshot antes del kickoff cae entre **3 y 7 minutos** del arranque. Los umbrales están en `tracker/config.py` (`HOURLY_GAP_MIN`, `PREGAME_GAP_MIN`, `CLOSING_GAP_MIN` y sus ventanas).
 
 Los logs de cada ejecución están en la pestaña **Actions** → *Tracker NFL*.
 
@@ -36,7 +55,8 @@ Python 3.10+, solo librería estándar. Con un `.env` como `.env.example`:
 | Comando | Qué hace |
 |---|---|
 | `python -m tracker run` | Decide si toca snapshot, detecta y alerta. `--force` toma snapshot siempre, `--dry-run` no envía a Telegram. |
-| `python -m tracker status` | Último snapshot, créditos, próxima ejecución y estado de Telegram. |
+| `python -m tracker status` | Último snapshot, créditos, próximo snapshot y estado de Telegram. |
+| `python -m tracker next [--seconds]` | Cuándo toca el próximo snapshot. Con `--seconds` imprime solo la espera: es el reloj del loop del workflow. |
 | `python -m tracker analyze [--snapshot N]` | Repite la detección sobre un snapshot sin enviar nada. |
 | `python -m tracker dashboard --open` | Regenera y abre `dashboard/index.html`. |
 | `python -m tracker telegram-setup` / `telegram-test` | Guarda el chat ID de Telegram / manda un mensaje de prueba. |
@@ -46,8 +66,8 @@ La base local (`data/tracker.db`) es independiente de la rama `state`. `scripts/
 
 ## Créditos y minutos
 
-- **The Odds API:** cada snapshot cuesta 3 créditos (3 mercados; hasta 10 casas cuentan como una región). La lista de partidos es gratis. Una semana normal ronda 534 créditos (~2,300 al mes). Si no hay partidos en los próximos 7 días no gasta.
-- **GitHub Actions:** 48 ejecuciones al día, ~1 minuto facturable cada una (~1,440 min/mes). En un repo privado del plan gratis el límite es 2,000 min/mes compartidos con tus otros repos privados.
+- **The Odds API:** cada snapshot cuesta 3 créditos (3 mercados; hasta 10 casas cuentan como una región). La lista de partidos es gratis. Con la cadencia de arriba son ~965 snapshots al mes, unos **2,900 créditos mensuales**. Si no hay partidos en los próximos 7 días no gasta.
+- **GitHub Actions:** el repo es público, así que los minutos son gratis e ilimitados. Es justo lo que hace viable el loop: en un repo privado, 5.5 h de job encadenadas todo el día costarían ~43,000 minutos al mes contra los 2,000 del plan gratis.
 
 ## Fuentes
 
@@ -97,14 +117,16 @@ El código está repartido así: `market.py` (valor de cada casa, consenso y for
 
 ## Retención
 
-Se conserva toda la temporada sin que la base pase de ~45 MB (GitHub rechaza archivos de más de 100 MB):
+Se conserva toda la temporada sin que la base pase de ~56 MB (GitHub rechaza archivos de más de 100 MB):
 
 | Antigüedad | Qué se guarda |
 |---|---|
-| Últimos 8 días (`KEEP_DAYS`) | Todas las líneas y splits. La detección usa 72 h y el dashboard 7 días. |
+| Últimos 4 días (`KEEP_DAYS`) | Todas las líneas y splits. La detección usa 72 h, así que 4 días dan margen. |
 | Hasta 200 días (`ARCHIVE_DAYS`) | Por partido: apertura, cierre (último snapshot antes del kickoff) y el primer snapshot de cada día, con sus splits. Alertas de información, vapor, RLM y graduales, y los eventos. |
 | Más de 200 días | Se borra todo. |
 
 Las aperturas se conservan mientras exista el partido, aunque sus líneas ya se hayan compactado.
 
-Las alertas de ruido se borran a los 8 días: solo sirven para el dashboard.
+Las alertas de ruido se borran a los 4 días: solo sirven para el dashboard.
+
+`KEEP_DAYS` bajó de 8 a 4 al apretar la cadencia: con ~32 snapshots diarios cada día de retención completa pesa ~7 MB, y con 8 días la base habría llegado a ~83 MB a fin de temporada, demasiado cerca del límite donde GitHub rechaza el push y la cadena se detiene. El dashboard sigue graficando 7 días, pero más allá del cuarto la serie se dibuja con el archivo diario.

@@ -61,12 +61,25 @@ PREGAME_WINDOW_MIN = int(os.environ.get("PREGAME_WINDOW_MIN", "120"))
 # y no contra el reloj para tolerar los retrasos del cron de GitHub Actions.
 HOURLY_GAP_MIN = int(os.environ.get("HOURLY_GAP_MIN", "55"))
 PREGAME_GAP_MIN = int(os.environ.get("PREGAME_GAP_MIN", "25"))
-# Días de líneas y splits completos (la detección usa 72 h y el dashboard 7 días).
-KEEP_DAYS = int(os.environ.get("KEEP_DAYS", "8"))
+# Ventana de cierre: pegado al kickoff los snapshots se juntan para capturar la línea
+# de cierre, que es contra la que se mide el CLV.
+CLOSING_WINDOW_MIN = int(os.environ.get("CLOSING_WINDOW_MIN", "30"))
+CLOSING_GAP_MIN = int(os.environ.get("CLOSING_GAP_MIN", "9"))
+# Hueco a partir del cual se avisa que la cadena de ejecuciones se cortó.
+STALE_GAP_MIN = int(os.environ.get("STALE_GAP_MIN", "150"))
+# Días de líneas y splits completos. La detección usa 72 h, así que 4 días dan margen.
+# No subirlo sin medir: con ~32 snapshots al día, cada día de retención completa pesa
+# ~7 MB, y si tracker.db pasa de 100 MB GitHub rechaza el push y la cadena muere.
+# El dashboard sigue graficando 7 días: más allá de la ventana completa usa el archivo
+# diario, así que la serie queda densa en lo reciente y dispersa en lo viejo.
+KEEP_DAYS = int(os.environ.get("KEEP_DAYS", "4"))
 # Días de archivo (toda la temporada): pasado KEEP_DAYS se conservan apertura, cierre y un
 # snapshot diario por partido; alertas y eventos se conservan completos.
 ARCHIVE_DAYS = int(os.environ.get("ARCHIVE_DAYS", "200"))
 LOW_CREDITS_WARNING = int(os.environ.get("LOW_CREDITS_WARNING", "100"))
+# Horas tras las que un partido de la base se considera fantasma: `tracker run` refresca
+# el calendario en cada pasada, así que algo sin refrescar ya no lo devuelve la API.
+EVENT_FRESH_HOURS = int(os.environ.get("EVENT_FRESH_HOURS", "3"))
 
 DB_PATH = Path(os.environ.get("DB_PATH", ROOT / "data" / "tracker.db"))
 DASHBOARD_PATH = ROOT / "dashboard" / "index.html"
